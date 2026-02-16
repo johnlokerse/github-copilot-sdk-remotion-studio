@@ -1,10 +1,10 @@
-# Copilot Remotion Studio
-
-
+# GitHub Copilot SDK and Remotion Studio
 
 Modern prompt-to-video web app built with [GitHub Copilot SDK](https://github.com/github/copilot-sdk), [Remotion](https://www.remotion.dev/), and Next.js.
 
 Enter a prompt, pick a model, generate a video composition with Copilot, render it to MP4 on the server, and preview it in the browser.
+
+![GitHub Copilot SDK and Remotion Studio](demo.gif)
 
 ## Features
 
