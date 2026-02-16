@@ -6,7 +6,16 @@ export const dynamic = "force-dynamic";
 
 const requestSchema = z.object({
   prompt: z.string().trim().min(10).max(2000),
-  model: z.string().trim().min(1).max(100).optional()
+  model: z.string().trim().min(1).max(100).optional(),
+  imageDataUrl: z
+    .union([
+      z
+        .string()
+        .max(10_000_000)
+        .refine((value) => /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,/i.test(value), "Unsupported image format."),
+      z.null()
+    ])
+    .optional()
 });
 
 type ServerLogEntry = {
@@ -37,11 +46,12 @@ export async function POST(request: Request) {
 
     log("request.parse.start");
     const body = await request.json();
-    const { prompt, model } = requestSchema.parse(body);
-    log("request.parse.done", `Prompt length: ${prompt.length}`);
+    const { prompt, model, imageDataUrl } = requestSchema.parse(body);
+    const normalizedImageDataUrl = imageDataUrl ?? undefined;
+    log("request.parse.done", `Prompt length: ${prompt.length}. Image attached: ${normalizedImageDataUrl ? "yes" : "no"}`);
 
     log("copilot.generate.start", `Model: ${model || process.env.COPILOT_MODEL || "gpt-5"}`);
-    const { spec } = await generateVideoSpecWithCopilot({ prompt, model });
+    const { spec } = await generateVideoSpecWithCopilot({ prompt, model, imageDataUrl: normalizedImageDataUrl });
     log("copilot.generate.done", `${spec.width}x${spec.height} @ ${spec.fps}fps, ${spec.durationInFrames} frames`);
 
     log("remotion.render.start");

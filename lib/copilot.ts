@@ -25,8 +25,14 @@ const fallbackSpec: GeneratedVideoSpec = {
   componentCode: ""
 };
 
-function buildGenerationPrompt(userPrompt: string): string {
-  return [
+function buildGenerationPrompt({
+  userPrompt,
+  hasUploadedImage
+}: {
+  userPrompt: string;
+  hasUploadedImage: boolean;
+}): string {
+  const promptLines = [
     "You are a Remotion video generator.",
     "Return ONLY one JSON object with exactly these keys:",
     "title, width, height, fps, durationInFrames, inputProps, componentCode",
@@ -42,10 +48,23 @@ function buildGenerationPrompt(userPrompt: string): string {
     "- Keep visible motion throughout the full clip (no long static freeze).",
     "- Use inline styles only.",
     "- Do not wrap in markdown code fences.",
-    "",
-    "User prompt:",
-    userPrompt
-  ].join("\n");
+    ""
+  ];
+
+  if (hasUploadedImage) {
+    promptLines.push(
+      "Uploaded image requirements:",
+      "- An uploaded image is available in inputProps.imageDataUrl (data URL).",
+      "- The component must read imageDataUrl from props and render it visibly in the video.",
+      "- Use Img from remotion or an img element with src={imageDataUrl}.",
+      "- Keep the image on screen long enough to be clearly visible.",
+      "- Do not add extra thumbnail/watermark-style overlays unless explicitly requested.",
+      ""
+    );
+  }
+
+  promptLines.push("User prompt:", userPrompt);
+  return promptLines.join("\n");
 }
 
 function parseJsonCandidate(content: string): unknown {
@@ -117,10 +136,12 @@ function extractAssistantContent(rawResponse: unknown): string {
 
 export async function generateVideoSpecWithCopilot({
   prompt,
-  model
+  model,
+  imageDataUrl
 }: {
   prompt: string;
   model?: string;
+  imageDataUrl?: string;
 }): Promise<{ spec: GeneratedVideoSpec; rawContent: string }> {
   const client = new CopilotClient({
     githubToken: process.env.GITHUB_TOKEN,
@@ -138,7 +159,10 @@ export async function generateVideoSpecWithCopilot({
 
     const response = await session.sendAndWait(
       {
-        prompt: buildGenerationPrompt(prompt)
+        prompt: buildGenerationPrompt({
+          userPrompt: prompt,
+          hasUploadedImage: Boolean(imageDataUrl)
+        })
       },
       4 * 60 * 1000
     );
@@ -165,7 +189,11 @@ export async function generateVideoSpecWithCopilot({
     }
 
     const parsed = parseJsonCandidate(content);
-    const spec = normalizeSpec(generatedVideoSchema.parse(parsed));
+    const parsedSpec = normalizeSpec(generatedVideoSchema.parse(parsed));
+    const spec: GeneratedVideoSpec = {
+      ...parsedSpec,
+      inputProps: imageDataUrl ? { ...parsedSpec.inputProps, imageDataUrl } : parsedSpec.inputProps
+    };
 
     if (!spec.componentCode.includes("export default")) {
       throw new Error("Generated component code is missing a default export.");

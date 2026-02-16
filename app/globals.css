@@ -168,6 +168,82 @@ body {
   gap: 0.4rem;
 }
 
+.upload-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.upload-input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(4, 8, 17, 0.65);
+  color: var(--text);
+  border-radius: 0;
+  min-height: 42px;
+  padding: 0.45rem 0.6rem;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+}
+
+.upload-input::file-selector-button {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(6, 11, 19, 0.8);
+  color: var(--text);
+  border-radius: 0;
+  height: 28px;
+  padding: 0 0.62rem;
+  margin-right: 0.65rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+}
+
+.clear-image-button {
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  background: rgba(6, 11, 19, 0.8);
+  color: var(--text);
+  height: 36px;
+  padding: 0 0.72rem;
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 0.73rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+}
+
+.clear-image-button:hover {
+  border-color: rgba(0, 213, 255, 0.75);
+  color: #9ef1ff;
+}
+
+.upload-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.upload-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.upload-preview {
+  width: min(240px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(4, 8, 17, 0.65);
+  border-radius: 0;
+  display: block;
+}
+
 .generate-button {
   height: 46px;
   min-width: 180px;

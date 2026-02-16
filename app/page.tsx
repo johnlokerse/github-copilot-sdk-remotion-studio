@@ -1,8 +1,11 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const fallbackModels = ["gpt-5", "claude-sonnet-4.5"];
+const maxUploadSizeBytes = 5 * 1024 * 1024;
+const acceptedImageTypes = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"]);
 
 type ServerLogEntry = {
   at: string;
@@ -89,6 +92,10 @@ export default function HomePage() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyItems, setHistoryItems] = useState<RenderHistoryItem[]>([]);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageFileName, setImageFileName] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   const addClientLog = (message: string) => {
     setActivityLogs((previous) => [
@@ -202,6 +209,57 @@ export default function HomePage() {
     setIsHistoryOpen(false);
   }
 
+  async function onImageChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0];
+
+    if (!selectedFile) {
+      return;
+    }
+
+    if (!acceptedImageTypes.has(selectedFile.type)) {
+      setImageError("Please upload a PNG, JPG, WEBP, or GIF image.");
+      return;
+    }
+
+    if (selectedFile.size > maxUploadSizeBytes) {
+      setImageError("Image is too large. Max upload size is 5 MB.");
+      return;
+    }
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+          reject(new Error("Failed to read uploaded image."));
+        };
+        reader.onerror = () => reject(new Error("Failed to read uploaded image."));
+        reader.readAsDataURL(selectedFile);
+      });
+
+      setImageError(null);
+      setImageDataUrl(dataUrl);
+      setImageFileName(selectedFile.name);
+      addClientLog(`Image selected: ${selectedFile.name}`);
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : "Failed to process uploaded image.";
+      setImageError(message);
+    }
+  }
+
+  function clearImage() {
+    setImageDataUrl(null);
+    setImageFileName(null);
+    setImageError(null);
+    if (imageInputRef.current) {
+      imageInputRef.current.value = "";
+    }
+    addClientLog("Uploaded image cleared.");
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -210,14 +268,26 @@ export default function HomePage() {
     setActivityLogs([]);
     addClientLog("Generate button clicked.");
     addClientLog(`Submitting request to /api/generate with model "${model}".`);
+    if (imageDataUrl) {
+      addClientLog(`Including uploaded image "${imageFileName || "image"}".`);
+    }
 
     try {
+      const payload: { prompt: string; model: string; imageDataUrl?: string } = {
+        prompt,
+        model
+      };
+
+      if (imageDataUrl) {
+        payload.imageDataUrl = imageDataUrl;
+      }
+
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ prompt, model })
+        body: JSON.stringify(payload)
       });
 
       const data = await parseResponseJson<ApiResponse>(response);
@@ -273,6 +343,39 @@ export default function HomePage() {
             rows={6}
             required
           />
+
+          <div className="upload-group">
+            <label className="field-label" htmlFor="image-upload">
+              Optional Image
+            </label>
+            <div className="upload-row">
+              <input
+                id="image-upload"
+                className="upload-input"
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                ref={imageInputRef}
+                onChange={onImageChange}
+              />
+              {imageDataUrl ? (
+                <button type="button" className="clear-image-button" onClick={clearImage}>
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            {imageFileName ? <p className="upload-meta">Selected: {imageFileName}</p> : null}
+            {imageError ? <p className="upload-error">{imageError}</p> : null}
+            {imageDataUrl ? (
+              <Image
+                className="upload-preview"
+                src={imageDataUrl}
+                alt={imageFileName || "Uploaded image"}
+                width={240}
+                height={160}
+                unoptimized
+              />
+            ) : null}
+          </div>
 
           <div className="form-row">
             <div className="model-group">
