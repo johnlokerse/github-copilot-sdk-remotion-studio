@@ -87,7 +87,7 @@ Request body:
 
 ```json
 {
-  "prompt": "Create an introduction for Cloud Automation Cluster. Orange background and typewriter text.",
+  "prompt": "Create an introduction for GitHub Copilot SDK. Orange background and typewriter text.",
   "model": "gpt-5"
 }
 ```
