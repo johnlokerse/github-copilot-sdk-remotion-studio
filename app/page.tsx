@@ -19,23 +19,50 @@ type ActivityLogEntry = {
   message: string;
 };
 
-type ApiSuccessResponse = {
-  ok: true;
+type VideoMetadata = {
+  title: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationInFrames: number;
+};
+
+type ApiVariantSuccess = {
+  variantId: string;
+  styleName: string;
+  styleBrief: string;
+  status: "succeeded";
   jobId: string;
   videoUrl: string;
-  metadata: {
-    title: string;
-    width: number;
-    height: number;
-    fps: number;
-    durationInFrames: number;
-  };
+  metadata: VideoMetadata;
+};
+
+type ApiVariantFailure = {
+  variantId: string;
+  styleName: string;
+  styleBrief: string;
+  status: "failed";
+  error: string;
+};
+
+type ApiVariant = ApiVariantSuccess | ApiVariantFailure;
+type VariantCountOption = 1 | 4;
+
+type ApiSuccessResponse = {
+  ok: true;
+  requestId?: string;
+  jobId: string;
+  videoUrl: string;
+  metadata: VideoMetadata;
+  variants?: ApiVariant[];
   logs?: ServerLogEntry[];
 };
 
 type ApiErrorResponse = {
   ok: false;
+  requestId?: string;
   error: string;
+  variants?: ApiVariant[];
   logs?: ServerLogEntry[];
   stack?: string;
 };
@@ -77,11 +104,20 @@ async function parseResponseJson<T>(response: Response): Promise<T> {
   }
 }
 
+function formatVideoDuration(metadata: VideoMetadata): string {
+  return `${(metadata.durationInFrames / metadata.fps).toFixed(1)}s`;
+}
+
+function isVariantSuccess(variant: ApiVariant): variant is ApiVariantSuccess {
+  return variant.status === "succeeded";
+}
+
 export default function HomePage() {
   const [prompt, setPrompt] = useState(
     "A bold motion-graphics intro for a tech launch: neon gradients, kinetic typography, and smooth scene transitions."
   );
   const [model, setModel] = useState("gpt-5");
+  const [variantCount, setVariantCount] = useState<VariantCountOption>(1);
   const [modelOptions, setModelOptions] = useState<string[]>(fallbackModels);
   const [isModelsLoading, setIsModelsLoading] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
@@ -95,6 +131,7 @@ export default function HomePage() {
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageFileName, setImageFileName] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [selectedVariant, setSelectedVariant] = useState<ApiVariant | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   const addClientLog = (message: string) => {
@@ -174,11 +211,49 @@ export default function HomePage() {
     };
   }, [isHistoryOpen]);
 
-  const videoDurationLabel = useMemo(() => {
-    if (!result) return "";
-    const seconds = (result.metadata.durationInFrames / result.metadata.fps).toFixed(1);
-    return `${seconds}s`;
+  useEffect(() => {
+    if (!selectedVariant) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedVariant(null);
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [selectedVariant]);
+
+  const displayVariants = useMemo<ApiVariant[]>(() => {
+    if (!result) return [];
+
+    if (Array.isArray(result.variants) && result.variants.length > 0) {
+      return result.variants;
+    }
+
+    return [
+      {
+        variantId: "style-1",
+        styleName: "Primary",
+        styleBrief: "Legacy single-style response.",
+        status: "succeeded" as const,
+        jobId: result.jobId,
+        videoUrl: result.videoUrl,
+        metadata: result.metadata
+      }
+    ];
   }, [result]);
+
+  const successfulVariantCount = useMemo(() => {
+    return displayVariants.filter(isVariantSuccess).length;
+  }, [displayVariants]);
+
+  const hasMultipleVariants = displayVariants.length > 1;
+  const singleVariant = hasMultipleVariants ? null : displayVariants[0];
 
   async function loadHistory() {
     setIsHistoryLoading(true);
@@ -207,6 +282,10 @@ export default function HomePage() {
 
   function closeHistoryModal() {
     setIsHistoryOpen(false);
+  }
+
+  function closeVariantModal() {
+    setSelectedVariant(null);
   }
 
   async function onImageChange(event: ChangeEvent<HTMLInputElement>) {
@@ -265,17 +344,19 @@ export default function HomePage() {
 
     setIsLoading(true);
     setError(null);
+    setSelectedVariant(null);
     setActivityLogs([]);
     addClientLog("Generate button clicked.");
-    addClientLog(`Submitting request to /api/generate with model "${model}".`);
+    addClientLog(`Submitting request to /api/generate with model "${model}" (${variantCount} style${variantCount > 1 ? "s" : ""}).`);
     if (imageDataUrl) {
       addClientLog(`Including uploaded image "${imageFileName || "image"}".`);
     }
 
     try {
-      const payload: { prompt: string; model: string; imageDataUrl?: string } = {
+      const payload: { prompt: string; model: string; variantCount: VariantCountOption; imageDataUrl?: string } = {
         prompt,
-        model
+        model,
+        variantCount
       };
 
       if (imageDataUrl) {
@@ -299,7 +380,23 @@ export default function HomePage() {
       }
 
       setResult(data);
-      addClientLog(`Video ready at ${data.videoUrl}.`);
+      const variants = Array.isArray(data.variants) && data.variants.length > 0
+        ? data.variants
+        : [
+            {
+              variantId: "style-1",
+              styleName: "Primary",
+              styleBrief: "Legacy single-style response.",
+              status: "succeeded" as const,
+              jobId: data.jobId,
+              videoUrl: data.videoUrl,
+              metadata: data.metadata
+            }
+          ];
+      const succeededCount = variants.filter((variant) => variant.status === "succeeded").length;
+
+      addClientLog(`${succeededCount}/${variants.length} variants completed.`);
+      addClientLog(`First ready video at ${data.videoUrl}.`);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unknown error.";
       addClientLog(`Error: ${message}`);
@@ -327,7 +424,7 @@ export default function HomePage() {
           </div>
           <h1>Prompt To Video Studio</h1>
           <p className="subtitle">
-            Type a concept, let Copilot author the Remotion composition, then render and preview the MP4 directly in your browser.
+            Type a concept, let Copilot author the Remotion composition, and render either one style or four alternatives.
           </p>
         </div>
 
@@ -378,24 +475,42 @@ export default function HomePage() {
           </div>
 
           <div className="form-row">
-            <div className="model-group">
-              <label className="field-label" htmlFor="model">
-                Copilot Model
-              </label>
-              <select
-                id="model"
-                className="model-input"
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                disabled={isModelsLoading}
-              >
-                {isModelsLoading ? <option value={model}>Loading models...</option> : null}
-                {modelOptions.map((modelOption) => (
-                  <option key={modelOption} value={modelOption}>
-                    {modelOption}
-                  </option>
-                ))}
-              </select>
+            <div className="settings-grid">
+              <div className="model-group">
+                <label className="field-label" htmlFor="model">
+                  Copilot Model
+                </label>
+                <select
+                  id="model"
+                  className="model-input"
+                  value={model}
+                  onChange={(event) => setModel(event.target.value)}
+                  disabled={isModelsLoading}
+                >
+                  {isModelsLoading ? <option value={model}>Loading models...</option> : null}
+                  {modelOptions.map((modelOption) => (
+                    <option key={modelOption} value={modelOption}>
+                      {modelOption}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="model-group">
+                <label className="field-label" htmlFor="variant-count">
+                  Style Count
+                </label>
+                <select
+                  id="variant-count"
+                  className="model-input"
+                  value={String(variantCount)}
+                  onChange={(event) => setVariantCount(Number(event.target.value) as VariantCountOption)}
+                  disabled={isLoading}
+                >
+                  <option value="1">1 style</option>
+                  <option value="4">4 styles</option>
+                </select>
+              </div>
             </div>
 
             <button
@@ -441,34 +556,72 @@ export default function HomePage() {
 
         {result ? (
           <>
-            <video className="video-player" controls autoPlay loop src={result.videoUrl} />
+            {hasMultipleVariants ? (
+              <>
+                <p className="variants-summary">
+                  {successfulVariantCount}/{displayVariants.length} variants succeeded
+                </p>
 
-            <div className="meta-grid">
-              <div className="meta-item">
-                <span className="meta-label">Title</span>
-                <span className="meta-value">{result.metadata.title}</span>
-              </div>
-              <div className="meta-item">
-                <span className="meta-label">Resolution</span>
-                <span className="meta-value">
-                  {result.metadata.width}x{result.metadata.height}
-                </span>
-              </div>
-              <div className="meta-item">
-                <span className="meta-label">FPS</span>
-                <span className="meta-value">{result.metadata.fps}</span>
-              </div>
-              <div className="meta-item">
-                <span className="meta-label">Duration</span>
-                <span className="meta-value">{videoDurationLabel}</span>
-              </div>
-              <div className="meta-item">
-                <span className="meta-label">Video URL</span>
-                <a className="meta-link" href={result.videoUrl} target="_blank" rel="noreferrer">
-                  {result.videoUrl}
-                </a>
-              </div>
-            </div>
+                <div className="variant-list">
+                  {displayVariants.map((variant) => (
+                    <button
+                      key={variant.variantId}
+                      type="button"
+                      className={`variant-list-item variant-list-item-${variant.status}`}
+                      onClick={() => setSelectedVariant(variant)}
+                    >
+                      <div className="variant-list-main">
+                        <h3 className="variant-list-title">{variant.styleName}</h3>
+                        <p className="variant-list-brief">{variant.styleBrief}</p>
+                      </div>
+                      <div className="variant-list-actions">
+                        <span className={`variant-status-pill variant-status-pill-${variant.status}`}>
+                          {variant.status === "succeeded" ? "Ready" : "Failed"}
+                        </span>
+                        <span className="variant-list-open">View</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : singleVariant?.status === "succeeded" ? (
+              <>
+                <video className="video-player" controls autoPlay loop preload="metadata" src={singleVariant.videoUrl} />
+
+                <div className="meta-grid">
+                  <div className="meta-item">
+                    <span className="meta-label">Title</span>
+                    <span className="meta-value">{singleVariant.metadata.title}</span>
+                  </div>
+                  <div className="meta-item">
+                    <span className="meta-label">Resolution</span>
+                    <span className="meta-value">
+                      {singleVariant.metadata.width}x{singleVariant.metadata.height}
+                    </span>
+                  </div>
+                  <div className="meta-item">
+                    <span className="meta-label">FPS</span>
+                    <span className="meta-value">{singleVariant.metadata.fps}</span>
+                  </div>
+                  <div className="meta-item">
+                    <span className="meta-label">Duration</span>
+                    <span className="meta-value">{formatVideoDuration(singleVariant.metadata)}</span>
+                  </div>
+                  <div className="meta-item">
+                    <span className="meta-label">Video URL</span>
+                    <a className="meta-link" href={singleVariant.videoUrl} target="_blank" rel="noreferrer">
+                      {singleVariant.videoUrl}
+                    </a>
+                  </div>
+                  <div className="meta-item">
+                    <span className="meta-label">Job ID</span>
+                    <span className="meta-value">{singleVariant.jobId}</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="variant-error">{singleVariant?.error || "This variant failed to render."}</p>
+            )}
           </>
         ) : (
           <div className="placeholder">
@@ -516,6 +669,62 @@ export default function HomePage() {
                   ))}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedVariant && hasMultipleVariants ? (
+        <div className="modal-overlay" role="presentation" onClick={closeVariantModal}>
+          <div className="modal-card variant-modal-card" role="dialog" aria-modal="true" aria-labelledby="variant-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3 id="variant-title">{selectedVariant.styleName}</h3>
+              <button type="button" className="modal-close-button" onClick={closeVariantModal}>
+                Close
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <p className="variant-brief">{selectedVariant.styleBrief}</p>
+
+              {selectedVariant.status === "succeeded" ? (
+                <>
+                  <video className="video-player variant-video-player" controls autoPlay loop preload="metadata" src={selectedVariant.videoUrl} />
+
+                  <div className="meta-grid variant-meta-grid">
+                    <div className="meta-item">
+                      <span className="meta-label">Title</span>
+                      <span className="meta-value">{selectedVariant.metadata.title}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">Resolution</span>
+                      <span className="meta-value">
+                        {selectedVariant.metadata.width}x{selectedVariant.metadata.height}
+                      </span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">FPS</span>
+                      <span className="meta-value">{selectedVariant.metadata.fps}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">Duration</span>
+                      <span className="meta-value">{formatVideoDuration(selectedVariant.metadata)}</span>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">Video URL</span>
+                      <a className="meta-link" href={selectedVariant.videoUrl} target="_blank" rel="noreferrer">
+                        {selectedVariant.videoUrl}
+                      </a>
+                    </div>
+                    <div className="meta-item">
+                      <span className="meta-label">Job ID</span>
+                      <span className="meta-value">{selectedVariant.jobId}</span>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="variant-error">{selectedVariant.error}</p>
+              )}
             </div>
           </div>
         </div>

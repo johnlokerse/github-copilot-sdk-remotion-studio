@@ -9,9 +9,10 @@ Enter a prompt, pick a model, generate a video composition with Copilot, render 
 ## Features
 
 - Prompt-driven video generation from natural language
+- Selectable style count: generate 1 style (default) or 4 alternatives
 - Model selection dropdown (auto-loaded from Copilot SDK)
 - Server-side render pipeline using Remotion (`h264` MP4)
-- In-app preview with metadata (resolution, FPS, duration)
+- In-app variant list with detail modal (video + metadata per style)
 - Activity timeline showing client + server generation steps
 - History modal to browse previously generated videos
 - Strict JSON parsing and clearer API error handling
@@ -81,27 +82,30 @@ npm run typecheck # TypeScript checks
 
 ### `POST /api/generate`
 
-Generates and renders a video.
+Generates and renders style variants for a single prompt.
 
 Request body:
 
 ```json
 {
   "prompt": "Create an introduction for GitHub Copilot SDK. Orange background and typewriter text.",
-  "model": "gpt-5"
+  "model": "gpt-5",
+  "variantCount": 4
 }
 ```
 
 - `prompt`: required, 10-2000 chars
 - `model`: optional, falls back to `COPILOT_MODEL` then `gpt-5`
+- `variantCount`: optional, allowed values `1` or `4`; defaults to `1`
 
 Success response:
 
 ```json
 {
   "ok": true,
-  "jobId": "uuid",
-  "videoUrl": "/renders/<jobId>.mp4",
+  "requestId": "uuid",
+  "jobId": "uuid-first-success",
+  "videoUrl": "/renders/<first-success>.mp4",
   "metadata": {
     "title": "Generated Remotion Video",
     "width": 1280,
@@ -109,23 +113,62 @@ Success response:
     "fps": 30,
     "durationInFrames": 300
   },
+  "variants": [
+    {
+      "variantId": "style-1",
+      "styleName": "Neon Kinetic Intro",
+      "styleBrief": "High-energy typography, bright gradients, fast transitions.",
+      "status": "succeeded",
+      "jobId": "uuid-style-1",
+      "videoUrl": "/renders/<style-1>.mp4",
+      "metadata": {
+        "title": "Neon Kinetic Intro",
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "durationInFrames": 300
+      }
+    },
+    {
+      "variantId": "style-2",
+      "styleName": "Editorial Minimal",
+      "styleBrief": "Sparse typography, restrained animation, cinematic pacing.",
+      "status": "failed",
+      "error": "Generated component code is missing a default export."
+    }
+  ],
   "logs": [
     { "at": "2026-01-01T00:00:00.000Z", "step": "request.received" }
   ]
 }
 ```
 
+- `variants` is always returned on success.
+- Backward compatibility: `jobId`, `videoUrl`, and `metadata` still point to the first successful variant.
+
 Error response:
 
 ```json
 {
   "ok": false,
-  "error": "Message",
+  "requestId": "uuid",
+  "error": "All style variants failed to render.",
+  "variants": [
+    {
+      "variantId": "style-1",
+      "styleName": "Neon Kinetic Intro",
+      "styleBrief": "High-energy typography, bright gradients, fast transitions.",
+      "status": "failed",
+      "error": "Render did not complete for this style."
+    }
+  ],
   "logs": [
     { "at": "2026-01-01T00:00:00.000Z", "step": "request.failed", "detail": "..." }
   ]
 }
 ```
+
+- Partial success is allowed. If at least one variant renders, the request returns `ok: true`.
 
 ### `GET /api/models`
 
@@ -137,18 +180,23 @@ Returns generated videos from `public/renders/*.mp4` with timestamp and file siz
 
 ## Render Outputs
 
-- Final videos: `public/renders/<jobId>.mp4`
-- Intermediate generated source: `.generated/jobs/<jobId>/...`
+- Final videos: `public/renders/<requestId>-<variantId>-<styleSlug>.mp4`
+- Intermediate generated source: `.generated/jobs/<requestId>/<variantId>/...`
 
 Both are excluded from version control by `.gitignore`.
 
 ## How Generation Works
 
 1. Client submits `prompt` + `model` to `/api/generate`
-2. Server asks Copilot SDK for a strict JSON video spec including TSX component code
-3. Server writes a temporary Remotion entry/root/component job
-4. Remotion bundles and renders MP4
-5. Video is saved to `public/renders/` and returned to the client for preview
+2. Server asks Copilot SDK for the requested number of distinct style briefs (1 or 4)
+3. Server asks Copilot SDK for one strict JSON video spec per style
+4. Server writes temporary Remotion entry/root/component jobs
+5. Remotion bundles and renders MP4 variants in parallel
+6. Videos are saved to `public/renders/` and returned to the client for list + modal preview
+
+## Performance Note
+
+Rendering `4` variants uses more CPU and memory than rendering `1` variant.
 
 ## Troubleshooting
 
@@ -165,4 +213,3 @@ Both are excluded from version control by `.gitignore`.
 
 - Do not commit real tokens to source control.
 - Use `.env.local` for local secrets.
-

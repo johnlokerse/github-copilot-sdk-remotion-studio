@@ -2,6 +2,7 @@ import { CopilotClient } from "@github/copilot-sdk";
 import { z } from "zod";
 
 export const fallbackModelOptions = ["gpt-5", "claude-sonnet-4.5"] as const;
+const DEFAULT_STYLE_COUNT = 4;
 
 const generatedVideoSchema = z.object({
   title: z.string().min(1).max(120).default("Generated Remotion Video"),
@@ -15,6 +16,32 @@ const generatedVideoSchema = z.object({
 
 export type GeneratedVideoSpec = z.infer<typeof generatedVideoSchema>;
 
+const styleBriefDraftSchema = z.object({
+  styleName: z.string().trim().min(1).max(80),
+  styleBrief: z.string().trim().min(20).max(800)
+});
+
+export type GeneratedStyleBrief = {
+  variantId: string;
+  styleName: string;
+  styleBrief: string;
+};
+
+export type VideoSpecGenerationSuccess = {
+  status: "succeeded";
+  style: GeneratedStyleBrief;
+  spec: GeneratedVideoSpec;
+  rawContent: string;
+};
+
+export type VideoSpecGenerationFailure = {
+  status: "failed";
+  style: GeneratedStyleBrief;
+  error: string;
+};
+
+export type VideoSpecGenerationResult = VideoSpecGenerationSuccess | VideoSpecGenerationFailure;
+
 const fallbackSpec: GeneratedVideoSpec = {
   title: "Generated Remotion Video",
   width: 1280,
@@ -25,11 +52,55 @@ const fallbackSpec: GeneratedVideoSpec = {
   componentCode: ""
 };
 
-function buildGenerationPrompt({
+function getResolvedModel(model?: string): string {
+  return model || process.env.COPILOT_MODEL || "gpt-5";
+}
+
+function buildStyleBriefGenerationPrompt({
   userPrompt,
+  count,
   hasUploadedImage
 }: {
   userPrompt: string;
+  count: number;
+  hasUploadedImage: boolean;
+}): string {
+  const promptLines = [
+    "You are a creative director for Remotion video concepts.",
+    `Return ONLY one JSON object with a single key: styles.`,
+    `styles must be an array with exactly ${count} objects.`,
+    "Each styles item must contain exactly these keys:",
+    "styleName, styleBrief",
+    "",
+    "Rules:",
+    "- styleName must be short and descriptive.",
+    "- styleBrief must be a concrete production direction with motion, tone, typography, and transitions.",
+    "- All styles must be clearly distinct from each other.",
+    "- Keep all styles aligned to the user prompt intent.",
+    "- Do not include markdown fences or extra keys.",
+    ""
+  ];
+
+  if (hasUploadedImage) {
+    promptLines.push(
+      "Uploaded image note:",
+      "- The final video variants will receive inputProps.imageDataUrl.",
+      "- Include at least one sentence in each styleBrief on how to feature the uploaded image.",
+      ""
+    );
+  }
+
+  promptLines.push("User prompt:", userPrompt);
+  return promptLines.join("\n");
+}
+
+function buildSpecGenerationPrompt({
+  userPrompt,
+  style,
+  hasUploadedImage
+}: {
+  userPrompt: string;
+  style: GeneratedStyleBrief;
   hasUploadedImage: boolean;
 }): string {
   const promptLines = [
@@ -50,6 +121,11 @@ function buildGenerationPrompt({
     "- Do not wrap in markdown code fences.",
     ""
   ];
+
+  promptLines.push("Creative direction for this variant:");
+  promptLines.push(`- Style name: ${style.styleName}`);
+  promptLines.push(`- Style brief: ${style.styleBrief}`);
+  promptLines.push("");
 
   if (hasUploadedImage) {
     promptLines.push(
@@ -134,15 +210,13 @@ function extractAssistantContent(rawResponse: unknown): string {
   return "";
 }
 
-export async function generateVideoSpecWithCopilot({
+async function runCopilotPrompt({
   prompt,
-  model,
-  imageDataUrl
+  model
 }: {
   prompt: string;
   model?: string;
-  imageDataUrl?: string;
-}): Promise<{ spec: GeneratedVideoSpec; rawContent: string }> {
+}): Promise<string> {
   const client = new CopilotClient({
     githubToken: process.env.GITHUB_TOKEN,
     useLoggedInUser: process.env.GITHUB_TOKEN ? false : true
@@ -154,15 +228,12 @@ export async function generateVideoSpecWithCopilot({
     await client.start();
 
     session = await client.createSession({
-      model: model || process.env.COPILOT_MODEL || "gpt-5"
+      model: getResolvedModel(model)
     });
 
     const response = await session.sendAndWait(
       {
-        prompt: buildGenerationPrompt({
-          userPrompt: prompt,
-          hasUploadedImage: Boolean(imageDataUrl)
-        })
+        prompt
       },
       4 * 60 * 1000
     );
@@ -188,18 +259,7 @@ export async function generateVideoSpecWithCopilot({
       throw new Error("Copilot did not return any content.");
     }
 
-    const parsed = parseJsonCandidate(content);
-    const parsedSpec = normalizeSpec(generatedVideoSchema.parse(parsed));
-    const spec: GeneratedVideoSpec = {
-      ...parsedSpec,
-      inputProps: imageDataUrl ? { ...parsedSpec.inputProps, imageDataUrl } : parsedSpec.inputProps
-    };
-
-    if (!spec.componentCode.includes("export default")) {
-      throw new Error("Generated component code is missing a default export.");
-    }
-
-    return { spec, rawContent: content };
+    return content;
   } finally {
     if (session) {
       await session.destroy().catch(() => undefined);
@@ -207,6 +267,171 @@ export async function generateVideoSpecWithCopilot({
 
     await client.stop().catch(() => []);
   }
+}
+
+function parseStyleBriefs(content: string, count: number): GeneratedStyleBrief[] {
+  const parsed = parseJsonCandidate(content);
+
+  let rawStyles: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    rawStyles = parsed;
+  } else if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "styles" in parsed &&
+    Array.isArray((parsed as { styles?: unknown[] }).styles)
+  ) {
+    rawStyles = (parsed as { styles: unknown[] }).styles;
+  } else {
+    throw new Error('Copilot did not return a valid "styles" array.');
+  }
+
+  if (rawStyles.length !== count) {
+    throw new Error(`Expected exactly ${count} styles but received ${rawStyles.length}.`);
+  }
+
+  const normalized: GeneratedStyleBrief[] = [];
+  const usedStyleNames = new Set<string>();
+
+  rawStyles.forEach((item, index) => {
+    const parsedStyle = styleBriefDraftSchema.parse(item);
+    const baseName = parsedStyle.styleName.trim() || `Style ${index + 1}`;
+    let resolvedName = baseName;
+    let suffix = 2;
+
+    while (usedStyleNames.has(resolvedName.toLowerCase())) {
+      resolvedName = `${baseName} (${suffix})`;
+      suffix += 1;
+    }
+
+    usedStyleNames.add(resolvedName.toLowerCase());
+
+    normalized.push({
+      variantId: `style-${index + 1}`,
+      styleName: resolvedName,
+      styleBrief: parsedStyle.styleBrief
+    });
+  });
+
+  return normalized;
+}
+
+export async function generateStyleBriefsWithCopilot({
+  prompt,
+  model,
+  imageDataUrl,
+  count = DEFAULT_STYLE_COUNT
+}: {
+  prompt: string;
+  model?: string;
+  imageDataUrl?: string;
+  count?: number;
+}): Promise<GeneratedStyleBrief[]> {
+  const rawContent = await runCopilotPrompt({
+    model,
+    prompt: buildStyleBriefGenerationPrompt({
+      userPrompt: prompt,
+      count,
+      hasUploadedImage: Boolean(imageDataUrl)
+    })
+  });
+
+  return parseStyleBriefs(rawContent, count);
+}
+
+export async function generateVideoSpecForStyle({
+  prompt,
+  model,
+  imageDataUrl,
+  style
+}: {
+  prompt: string;
+  model?: string;
+  imageDataUrl?: string;
+  style: GeneratedStyleBrief;
+}): Promise<{ spec: GeneratedVideoSpec; rawContent: string }> {
+  const rawContent = await runCopilotPrompt({
+    model,
+    prompt: buildSpecGenerationPrompt({
+      userPrompt: prompt,
+      style,
+      hasUploadedImage: Boolean(imageDataUrl)
+    })
+  });
+
+  const parsed = parseJsonCandidate(rawContent);
+  const parsedSpec = normalizeSpec(generatedVideoSchema.parse(parsed));
+  const spec: GeneratedVideoSpec = {
+    ...parsedSpec,
+    inputProps: imageDataUrl ? { ...parsedSpec.inputProps, imageDataUrl } : parsedSpec.inputProps
+  };
+
+  if (!spec.componentCode.includes("export default")) {
+    throw new Error(`Generated component code is missing a default export for "${style.styleName}".`);
+  }
+
+  return { spec, rawContent };
+}
+
+export async function generateVideoSpecsForStyles({
+  prompt,
+  model,
+  imageDataUrl,
+  styles
+}: {
+  prompt: string;
+  model?: string;
+  imageDataUrl?: string;
+  styles: GeneratedStyleBrief[];
+}): Promise<VideoSpecGenerationResult[]> {
+  const results = await Promise.all(
+    styles.map(async (style): Promise<VideoSpecGenerationResult> => {
+      try {
+        const { spec, rawContent } = await generateVideoSpecForStyle({
+          prompt,
+          model,
+          imageDataUrl,
+          style
+        });
+
+        return {
+          status: "succeeded",
+          style,
+          spec,
+          rawContent
+        };
+      } catch (error) {
+        return {
+          status: "failed",
+          style,
+          error: error instanceof Error ? error.message : "Unknown error"
+        };
+      }
+    })
+  );
+
+  return results;
+}
+
+export async function generateVideoSpecWithCopilot({
+  prompt,
+  model,
+  imageDataUrl
+}: {
+  prompt: string;
+  model?: string;
+  imageDataUrl?: string;
+}): Promise<{ spec: GeneratedVideoSpec; rawContent: string }> {
+  return generateVideoSpecForStyle({
+    prompt,
+    model,
+    imageDataUrl,
+    style: {
+      variantId: "style-1",
+      styleName: "Primary",
+      styleBrief: "Create one polished, high-contrast, motion-forward treatment that follows the user prompt directly."
+    }
+  });
 }
 
 export async function listAvailableCopilotModels(): Promise<string[]> {

@@ -11,6 +11,38 @@ type RenderResult = {
   outputPath: string;
 };
 
+export type RenderVariantInput = {
+  requestId: string;
+  variantId: string;
+  styleName: string;
+  spec: GeneratedVideoSpec;
+};
+
+export type RenderVariantSuccess = {
+  status: "succeeded";
+  variantId: string;
+  styleName: string;
+  jobId: string;
+  videoUrl: string;
+  outputPath: string;
+  metadata: {
+    title: string;
+    width: number;
+    height: number;
+    fps: number;
+    durationInFrames: number;
+  };
+};
+
+export type RenderVariantFailure = {
+  status: "failed";
+  variantId: string;
+  styleName: string;
+  error: string;
+};
+
+export type RenderVariantResult = RenderVariantSuccess | RenderVariantFailure;
+
 const COMPOSITION_ID = "GeneratedVideo";
 
 function buildRootFile(spec: GeneratedVideoSpec): string {
@@ -42,9 +74,19 @@ import { RemotionRoot } from "./Root";
 registerRoot(RemotionRoot);
 `;
 
-export async function renderRemotionVideo(spec: GeneratedVideoSpec): Promise<RenderResult> {
-  const jobId = randomUUID();
-  const jobsDir = path.join(process.cwd(), ".generated", "jobs", jobId);
+function toSlug(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug || "style";
+}
+
+export async function renderRemotionVideoVariant(input: RenderVariantInput): Promise<RenderVariantSuccess> {
+  const slug = toSlug(input.styleName);
+  const jobId = `${input.requestId}-${input.variantId}-${slug}`;
+  const jobsDir = path.join(process.cwd(), ".generated", "jobs", input.requestId, input.variantId);
   const entryPoint = path.join(jobsDir, "index.ts");
   const rootFile = path.join(jobsDir, "Root.tsx");
   const componentFile = path.join(jobsDir, "GeneratedVideo.tsx");
@@ -54,8 +96,8 @@ export async function renderRemotionVideo(spec: GeneratedVideoSpec): Promise<Ren
 
   await Promise.all([
     writeFile(entryPoint, entryFile, "utf8"),
-    writeFile(rootFile, buildRootFile(spec), "utf8"),
-    writeFile(componentFile, spec.componentCode, "utf8")
+    writeFile(rootFile, buildRootFile(input.spec), "utf8"),
+    writeFile(componentFile, input.spec.componentCode, "utf8")
   ]);
 
   const bundled = await bundle({
@@ -67,7 +109,7 @@ export async function renderRemotionVideo(spec: GeneratedVideoSpec): Promise<Ren
   const composition = await selectComposition({
     id: COMPOSITION_ID,
     serveUrl: bundled,
-    inputProps: spec.inputProps
+    inputProps: input.spec.inputProps
   });
 
   const outputPath = path.join(process.cwd(), "public", "renders", `${jobId}.mp4`);
@@ -77,14 +119,59 @@ export async function renderRemotionVideo(spec: GeneratedVideoSpec): Promise<Ren
     serveUrl: bundled,
     codec: "h264",
     outputLocation: outputPath,
-    inputProps: spec.inputProps,
+    inputProps: input.spec.inputProps,
     overwrite: true,
     logLevel: "error"
   });
 
   return {
+    status: "succeeded",
+    variantId: input.variantId,
+    styleName: input.styleName,
     jobId,
     videoUrl: `/renders/${jobId}.mp4`,
-    outputPath
+    outputPath,
+    metadata: {
+      title: input.spec.title,
+      width: input.spec.width,
+      height: input.spec.height,
+      fps: input.spec.fps,
+      durationInFrames: input.spec.durationInFrames
+    }
+  };
+}
+
+export async function renderRemotionVideoVariants(variants: RenderVariantInput[]): Promise<RenderVariantResult[]> {
+  const results = await Promise.all(
+    variants.map(async (variant): Promise<RenderVariantResult> => {
+      try {
+        return await renderRemotionVideoVariant(variant);
+      } catch (error) {
+        return {
+          status: "failed",
+          variantId: variant.variantId,
+          styleName: variant.styleName,
+          error: error instanceof Error ? error.message : "Unknown render error"
+        };
+      }
+    })
+  );
+
+  return results;
+}
+
+export async function renderRemotionVideo(spec: GeneratedVideoSpec): Promise<RenderResult> {
+  const requestId = randomUUID();
+  const variantResult = await renderRemotionVideoVariant({
+    requestId,
+    variantId: "style-1",
+    styleName: "Primary",
+    spec
+  });
+
+  return {
+    jobId: variantResult.jobId,
+    videoUrl: variantResult.videoUrl,
+    outputPath: variantResult.outputPath
   };
 }
